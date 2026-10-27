@@ -401,7 +401,7 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 
 def serve(port: int = 0):
