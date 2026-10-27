@@ -5,8 +5,14 @@ Boots a local HTTP service, then opens the UI in the system browser's
 "app mode" (Edge / Chrome ``--app=``).  Nothing is embedded, so there is no
 renderer that can crash: if the browser exists, the UI shows up.
 
-The app lives as long as its window does - we watch the window itself rather
-than the launcher process, because Chromium re-parents itself on start.
+Two rules learned from real failures:
+
+1. ``msedge.exe`` is a stub.  It forks the real browser process and exits, so
+   its exit status says nothing about the UI.  We therefore watch the window
+   only - never the launcher process.
+2. A process started from an elevated app inherits administrator rights, and
+   Chromium will not carry its sandbox that way.  The browser is started with
+   the shell's unelevated token instead.
 
 Fallbacks, in order: Edge -> Chrome -> default browser.
 """
@@ -27,10 +33,16 @@ import server                                    # noqa: E402
 from core import is_admin, data_dir               # noqa: E402
 
 APP_ID = "WebcastMateCapture.Desktop.1"
-MUTEX_NAME = "Global\\WebcastMateCapture_SingleInstance"
+# "Local\\" (per session) - a normal user cannot create objects in the Global
+# namespace, which used to make the app claim it was already running.
+MUTEX_NAME = "Local\\WebcastMateCapture_SingleInstance"
 UI_TITLE = "抓取直播伴侣画面"
 
 WIN_W, WIN_H = 1080, 720
+
+_k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+_adv = ctypes.WinDLL("advapi32", use_last_error=True)
+_u32 = ctypes.windll.user32
 
 
 def _set_app_id():
@@ -41,13 +53,13 @@ def _set_app_id():
 
 
 def _single_instance():
-    """Return a handle if we are the first instance, else None."""
+    """Return a truthy handle if we are the first instance, else None."""
     try:
-        k = ctypes.windll.kernel32
-        h = k.CreateMutexW(None, False, MUTEX_NAME)
-        if k.GetLastError() == 183:       # ERROR_ALREADY_EXISTS
+        h = _k32.CreateMutexW(None, False, MUTEX_NAME)
+        err = ctypes.get_last_error()
+        if h and err == 183:              # ERROR_ALREADY_EXISTS
             return None
-        return h
+        return h or True                  # cannot tell -> let it run
     except Exception:
         return True
 
@@ -148,10 +160,123 @@ def _profile_dir():
         return os.path.join(os.environ.get("TEMP", "."), "wmc-browser")
 
 
+class _STARTUPINFOW(ctypes.Structure):
+    _fields_ = [
+        ("cb", wt.DWORD),
+        ("lpReserved", wt.LPWSTR),
+        ("lpDesktop", wt.LPWSTR),
+        ("lpTitle", wt.LPWSTR),
+        ("dwX", wt.DWORD), ("dwY", wt.DWORD),
+        ("dwXSize", wt.DWORD), ("dwYSize", wt.DWORD),
+        ("dwXCountChars", wt.DWORD), ("dwYCountChars", wt.DWORD),
+        ("dwFillAttribute", wt.DWORD), ("dwFlags", wt.DWORD),
+        ("wShowWindow", wt.WORD), ("cbReserved2", wt.WORD),
+        ("lpReserved2", ctypes.c_void_p),
+        ("hStdInput", wt.HANDLE),
+        ("hStdOutput", wt.HANDLE),
+        ("hStdError", wt.HANDLE),
+    ]
+
+
+class _PROCESS_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ("hProcess", wt.HANDLE),
+        ("hThread", wt.HANDLE),
+        ("dwProcessId", wt.DWORD),
+        ("dwThreadId", wt.DWORD),
+    ]
+
+
+def _spawn_unelevated(exe, args):
+    """Start *exe* with the desktop shell's (non-elevated) token.
+
+    Returns the new pid, or None when the trick is not possible.  The caller
+    falls back to a normal spawn in that case.
+    """
+    if not is_admin():
+        return None                      # already unelevated
+
+    hproc = tok = primary = None
+    try:
+        hwnd = _u32.GetShellWindow()
+        if not hwnd:
+            _log("unelevated: no shell window")
+            return None
+        pid = wt.DWORD()
+        _u32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if not pid.value:
+            return None
+
+        hproc = _k32.OpenProcess(0x1000, False, pid.value)   # QUERY_LIMITED
+        if not hproc:
+            _log("unelevated: OpenProcess err=%s" % ctypes.get_last_error())
+            return None
+
+        tok = wt.HANDLE()
+        if not _adv.OpenProcessToken(hproc, 0x0002 | 0x0008,
+                                     ctypes.byref(tok)):     # DUPLICATE|QUERY
+            _log("unelevated: OpenProcessToken err=%s" % ctypes.get_last_error())
+            return None
+
+        primary = wt.HANDLE()
+        if not _adv.DuplicateTokenEx(tok, 0x02000000, None, 2, 1,
+                                     ctypes.byref(primary)):  # MAX_ALLOWED
+            _log("unelevated: DuplicateTokenEx err=%s" % ctypes.get_last_error())
+            return None
+
+        si = _STARTUPINFOW()
+        si.cb = ctypes.sizeof(si)
+        pi = _PROCESS_INFORMATION()
+        cmd = ctypes.create_unicode_buffer(subprocess.list2cmdline([exe] + args))
+
+        ok = _adv.CreateProcessWithTokenW(
+            primary,
+            0x00000001,                  # LOGON_WITH_PROFILE
+            exe,
+            cmd,
+            0x00000400,                  # CREATE_UNICODE_ENVIRONMENT
+            None,
+            None,
+            ctypes.byref(si),
+            ctypes.byref(pi),
+        )
+        if not ok:
+            _log("unelevated: CreateProcessWithTokenW err=%s"
+                 % ctypes.get_last_error())
+            return None
+
+        new_pid = int(pi.dwProcessId)
+        for h in (pi.hThread, pi.hProcess):
+            if h:
+                _k32.CloseHandle(h)
+        return new_pid
+    except Exception as e:
+        _log("unelevated failed: %r" % (e,))
+        return None
+    finally:
+        for h in (primary, tok, hproc):
+            try:
+                if h:
+                    _k32.CloseHandle(h)
+            except Exception:
+                pass
+
+
+def _spawn_detached(exe, args):
+    try:
+        kw = {"close_fds": True}
+        if os.name == "nt":
+            kw["creationflags"] = 0x00000008          # DETACHED_PROCESS
+        p = subprocess.Popen([exe] + args, **kw)
+        return int(p.pid)
+    except Exception as e:
+        _log("launch failed: %r" % (e,))
+        return None
+
+
 def launch_app_window(exe, url):
-    """Open *url* as a standalone app window.  Returns the Popen or None."""
+    """Open *url* as a standalone app window.  Returns the pid or None."""
     args = [
-        exe,
         "--app=" + url,
         "--user-data-dir=" + _profile_dir(),
         "--window-size=%d,%d" % (WIN_W, WIN_H),
@@ -165,14 +290,13 @@ def launch_app_window(exe, url):
         # (Clash / v2ray / corporate) intercept that and answer 502
         "--no-proxy-server",
     ]
-    kw = {"close_fds": True}
-    if os.name == "nt":
-        kw["creationflags"] = 0x00000008          # DETACHED_PROCESS
-    try:
-        return subprocess.Popen(args, **kw)
-    except Exception as e:
-        _log("launch failed: %r" % (e,))
-        return None
+    if is_admin():
+        pid = _spawn_unelevated(exe, args)
+        if pid:
+            _log("launched with shell token pid=%s" % pid)
+            return pid
+        _log("shell token unavailable, spawning as-is")
+    return _spawn_detached(exe, args)
 
 
 _ENUM_CB = ctypes.WINFUNCTYPE(ctypes.c_bool, wt.HWND, wt.LPARAM)
@@ -180,7 +304,7 @@ _ENUM_CB = ctypes.WINFUNCTYPE(ctypes.c_bool, wt.HWND, wt.LPARAM)
 
 def find_ui_window():
     """Return the HWND of our app window, or None."""
-    u = ctypes.windll.user32
+    u = _u32
     found = []
 
     def _each(h, _):
@@ -216,7 +340,6 @@ def dark_titlebar(hwnd):
     try:
         h = wt.HWND(hwnd)
         dwm = ctypes.windll.dwmapi
-        u = ctypes.windll.user32
 
         # 1) explicit caption colour (Win11 22H2+): COLORREF is 0x00BBGGRR
         for attr, colour in ((35, 0x00120C0A),      # background #0a0c12
@@ -241,9 +364,9 @@ def dark_titlebar(hwnd):
                 pass
 
         if ok:
-            u.SetWindowPos(h, None, 0, 0, 0, 0,
-                           0x0002 | 0x0001 | 0x0004 | 0x0010)
-            u.RedrawWindow(h, None, None, 0x0001 | 0x0080 | 0x0400)
+            _u32.SetWindowPos(h, None, 0, 0, 0, 0,
+                              0x0002 | 0x0001 | 0x0004 | 0x0010)
+            _u32.RedrawWindow(h, None, None, 0x0001 | 0x0080 | 0x0400)
             _DARK_DONE.add(hwnd)
             _log("dark titlebar ok")
     except Exception as e:
@@ -290,12 +413,11 @@ def main():
     browser = find_browser()
     _log("browser: %s" % (browser or "none"))
 
-    proc = None
+    pid = None
     if browser and "--browser" not in sys.argv:
-        proc = launch_app_window(browser, url)
-        if proc:
-            _log("app window pid=%s" % proc.pid)
-    if proc is None:
+        pid = launch_app_window(browser, url)
+        _log("app window pid=%s" % pid)
+    if pid is None:
         _log("fallback: default browser")
         try:
             webbrowser.open(url)
@@ -303,7 +425,10 @@ def main():
             pass
 
     # ---- stay alive as long as the window does -------------------------
-    boot_deadline = time.time() + 30
+    # NOTE: never judge by the launcher process.  msedge.exe exits right
+    # after handing off to the real browser, which is not a failure.
+    boot_deadline = time.time() + 40
+    retried = False
     window_seen = False
     missing_since = None
     last_hit = time.time()
@@ -315,10 +440,8 @@ def main():
 
         hwnd = find_ui_window()
         if tick % 8 == 0:
-            _log("watch hwnd=%s seen=%s proc=%s hits=%d"
-                 % (hwnd, window_seen,
-                    proc.poll() if proc is not None else "-",
-                    server.LAST_HIT - last_hit))
+            _log("watch hwnd=%s seen=%s pid=%s"
+                 % (hwnd, window_seen, pid))
         if hwnd:
             if not window_seen:
                 window_seen = True
@@ -326,18 +449,24 @@ def main():
             dark_titlebar(hwnd)
             missing_since = None
         elif window_seen:
-            # vanished -> give it a moment (page reload keeps the hwnd)
+            # vanished -> give it a moment (a reload keeps the same hwnd)
             if missing_since is None:
                 missing_since = time.time()
             elif time.time() - missing_since > 4:
                 _log("window closed")
                 break
-        elif proc is not None and proc.poll() is not None:
-            _log("browser exited before showing a window")
-            break
         elif time.time() > boot_deadline:
-            _log("no window after 30s, giving up")
-            break
+            if not retried:
+                retried = True
+                _log("no window yet, retry with default browser")
+                try:
+                    webbrowser.open(url)
+                except Exception:
+                    pass
+                boot_deadline = time.time() + 25
+            else:
+                _log("still no window, giving up")
+                break
 
         if server.LAST_HIT > last_hit:
             last_hit = server.LAST_HIT
