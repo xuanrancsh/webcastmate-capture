@@ -1,0 +1,28 @@
+# build output
+build/
+dist/
+*.spec.bak
+src/__pycache__/
+**/__pycache__/
+*.pyc
+
+# local archive of the first prototype (not part of the project)
+_legacy/
+
+# editor / os
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# local runtime data
+hook.log
+res.txt
+cmd.txt
+
+# ad-hoc rescue script (machine specific, not for distribution)
+*.bat
+
+# agent workspace metadata
+.workbuddy/
