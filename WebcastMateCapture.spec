@@ -9,25 +9,9 @@ ROOT = os.path.abspath(os.path.dirname(SPEC))          # noqa: F821
 
 datas = [(os.path.join(ROOT, "src", "assets"), "assets")]
 binaries = []
-hiddenimports = []
-
-for pkg in ("webview", "clr_loader"):
-    try:
-        d, b, h = collect_all(pkg)
-        datas += d
-        binaries += b
-        hiddenimports += h
-    except Exception as e:                              # pragma: no cover
-        print("collect_all(%s) failed: %s" % (pkg, e))
-
-hiddenimports += [
-    "clr", "pythonnet", "pythonnet.runtime",
+hiddenimports = [
     "numpy", "PIL", "PIL.Image", "PIL._imaging",
     "windows_capture",
-    "bottle",           # pywebview's http backend
-    "proxy_tools",
-    "webview.platforms.edgechromium",
-    "webview.platforms.winforms",
 ]
 
 icon = os.path.join(ROOT, "src", "assets", "icon.ico")

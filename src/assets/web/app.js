@@ -89,7 +89,9 @@
     el.canvas.textContent = hasCanvas ? `${st.canvas_w} × ${st.canvas_h}` : "—";
     el.aspect.textContent = st.aspect !== "-" ? st.aspect : "—";
     el.fps.textContent = st.fps ? st.fps + " fps" : "—";
-    el.scale.textContent = st.scale ? "×" + Number(st.scale).toFixed(3).replace(/0+$/, "").replace(/\.$/, "") : "—";
+    el.scale.textContent = (st.capturing && st.scale)
+      ? "×" + Number(st.scale).toFixed(3).replace(/0+$/, "").replace(/\.$/, "")
+      : "—";
     el.msg.textContent = st.message || "—";
 
     // buttons
@@ -207,14 +209,10 @@
   $$(".nav").forEach((b) => b.addEventListener("click", () => switchView(b.dataset.view)));
   switchView((location.hash || "#capture").slice(1));
 
-  $$(".wc").forEach((b) => b.addEventListener("click", async () => {
-    const act = b.dataset.act;
-    if (act === "close") {
-      await api("/api/win", { action: "close" });
-    } else {
-      await api("/api/win", { action: act });
-    }
-  }));
+  /* keep-alive: tells the launcher the window is still open */
+  setInterval(() => {
+    fetch("/api/ping", { cache: "no-store" }).catch(() => {});
+  }, 5000);
 
   /* ─────────────────────────── settings ─────────────────────────── */
   $("#btn-locate").addEventListener("click", async () => {

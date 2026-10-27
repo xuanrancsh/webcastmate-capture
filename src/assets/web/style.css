@@ -46,32 +46,14 @@ body::after{
   background-size:3px 3px;
 }
 
-/* ── title bar ─────────────────────────────────────────────── */
-.titlebar{
-  position:relative;z-index:3;height:var(--tb);
-  display:flex;align-items:center;gap:14px;padding:0 8px 0 18px;
-  border-bottom:1px solid var(--line);
-  background:linear-gradient(180deg,rgba(255,255,255,.03),rgba(255,255,255,0));
+/* ── brand (inside rail) ───────────────────────────────────── */
+.rail-logo{
+  width:32px;height:32px;flex:none;margin:0 0 12px;
+  filter:drop-shadow(0 4px 12px rgba(90,162,255,.35));
 }
-.brand{display:flex;align-items:center;gap:11px}
-.logo{width:26px;height:26px;flex:none}
-.brand-txt{display:flex;flex-direction:column;line-height:1.15}
-.brand-txt strong{font-size:13.5px;font-weight:600;letter-spacing:.2px}
-.brand-txt span{font-size:10.5px;color:var(--txt-3);letter-spacing:.5px;
-  text-transform:uppercase}
-.drag-hint{flex:1;height:100%}
-.win-ctl{display:flex;gap:2px}
-.wc{
-  width:38px;height:32px;border:0;border-radius:9px;background:transparent;
-  color:var(--txt-3);display:grid;place-items:center;cursor:pointer;
-  transition:background .14s,color .14s;
-}
-.wc svg{width:12px;height:12px}
-.wc:hover{background:var(--panel-hi);color:var(--txt)}
-.wc.close:hover{background:#e5484d;color:#fff}
 
 /* ── layout ────────────────────────────────────────────────── */
-.shell{position:relative;z-index:2;display:flex;height:calc(100vh - var(--tb))}
+.shell{position:relative;z-index:2;display:flex;height:100vh}
 
 .rail{
   width:62px;flex:none;display:flex;flex-direction:column;align-items:center;
@@ -192,11 +174,11 @@ main{flex:1;min-width:0;padding:16px 18px 18px}
 .actions{display:flex;align-items:center;gap:9px;flex:none}
 .spacer{flex:1}
 .btn{
-  position:relative;display:inline-flex;align-items:center;gap:7px;
-  height:38px;padding:0 16px;border-radius:11px;cursor:pointer;
+  position:relative;display:inline-flex;align-items:center;justify-content:center;
+  gap:7px;height:38px;padding:0 16px;border-radius:11px;cursor:pointer;
   border:1px solid var(--line-hi);background:var(--panel);
   color:var(--txt);font-size:13px;font-weight:500;font-family:inherit;
-  transition:.16s;white-space:nowrap;
+  line-height:1;transition:.16s;white-space:nowrap;
 }
 .btn svg{width:15px;height:15px;flex:none}
 .btn:hover{background:var(--panel-hi);border-color:rgba(255,255,255,.2)}

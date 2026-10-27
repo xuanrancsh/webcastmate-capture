@@ -7,6 +7,8 @@
 ![build](https://github.com/xuanrancsh/webcastmate-capture/actions/workflows/build.yml/badge.svg)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
+![界面预览](docs/preview.png)
+
 ---
 
 ## 它解决什么问题
@@ -35,7 +37,7 @@
 - Windows 10 1809+ 或 Windows 11，x64
 - 已安装 **抖音直播伴侣**（12.x 及以上）
 - 管理员权限（首次运行会弹 UAC，程序需要写入直播伴侣安装目录）
-- WebView2 运行时（Win11 自带；Win10 多数已通过 Edge 更新安装。缺失时程序会自动改用默认浏览器打开界面）
+- Microsoft Edge 或 Google Chrome（Win10/11 均自带 Edge）。界面以浏览器的「应用窗口」模式打开，不嵌入任何内核，因此不会出现渲染崩溃；两者都没有时退回系统默认浏览器
 
 ## 快速开始
 
@@ -128,7 +130,7 @@ It prepends a `require()` to the app's Electron entry (`resources/app/index.js`)
 - Auto-detects canvas size (landscape / portrait / 4:3 / 21:9), never stretches.
 - Fully reversible: injected line is stripped or restored from `.bak` on exit.
 - The injected line is wrapped in `try/catch`, so a missing hook can never break the host app.
-- Requires Windows 10 1809+ x64, WebView2 runtime, and the 直播伴侣 app installed.
+- Requires Windows 10 1809+ x64, Edge or Chrome (the UI runs in the browser's app window — nothing is embedded, so no renderer crashes), and the 直播伴侣 app installed.
 
 Download the latest `WebcastMateCapture.exe` from [Releases](../../releases/latest), run it as administrator, and hit **开始抓取 (Start)**.
 

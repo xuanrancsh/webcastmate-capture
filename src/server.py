@@ -6,6 +6,8 @@ and no exposure to the LAN.
 """
 from __future__ import annotations
 
+import ctypes
+import ctypes.wintypes as wt
 import io
 import json
 import mimetypes
@@ -56,7 +58,42 @@ class App:
 
 
 APP: App | None = None
-WIN_CTL: dict = {}          # {"minimize": fn, "close": fn, "browse": fn}
+WIN_CTL: dict = {}          # kept for compatibility; not used any more
+LAST_HIT = time.time()      # last time any HTTP request arrived
+
+
+class _BROWSEINFOW(ctypes.Structure):
+    _fields_ = [("hwndOwner", wt.HWND),
+                ("pidlRoot", ctypes.c_void_p),
+                ("pszDisplayName", wt.LPWSTR),
+                ("lpszTitle", ctypes.c_wchar_p),
+                ("ulFlags", wt.UINT),
+                ("lpfn", ctypes.c_void_p),
+                ("lParam", wt.LPARAM),
+                ("iImage", ctypes.c_int)]
+
+
+def pick_folder(title="选择直播伴侣安装目录"):
+    """Native folder picker via SHBrowseForFolderW (no tkinter, no deps)."""
+    try:
+        ole32 = ctypes.windll.ole32
+        shell32 = ctypes.windll.shell32
+        ole32.CoInitialize(None)
+        buf = ctypes.create_unicode_buffer(260)
+        bi = _BROWSEINFOW()
+        bi.hwndOwner = None
+        bi.pszDisplayName = buf
+        bi.lpszTitle = title
+        bi.ulFlags = 0x0001 | 0x0040 | 0x0010   # RETURNONLYFSDIRS|NEWDIALOG|EDITBOX
+        pidl = shell32.SHBrowseForFolderW(ctypes.byref(bi))
+        if not pidl:
+            return None
+        path = ctypes.create_unicode_buffer(520)
+        shell32.SHGetPathFromIDListW(pidl, path)
+        ole32.CoTaskMemFree(pidl)
+        return path.value or None
+    except Exception:
+        return None
 
 
 def pictures_dir() -> str:
@@ -86,7 +123,14 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------------------------------------------------------------- helpers
     def log_message(self, fmt, *args):
-        pass
+        # access log goes to the same file as the engine log (main.log)
+        if os.environ.get("WMC_ACCESS_LOG", "1") == "1":
+            try:
+                print("[%s] [http] %s - %s"
+                      % (time.strftime("%H:%M:%S"), self.address_string(),
+                         fmt % args))
+            except Exception:
+                pass
 
     def _json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -134,9 +178,13 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------------------------------------------------------------- routes
     def do_GET(self):
+        global LAST_HIT
+        LAST_HIT = time.time()
         u = urlparse(self.path)
         p = u.path
         try:
+            if p == "/api/ping":
+                return self._json({"ok": True, "t": LAST_HIT})
             if p in ("/", "/index.html"):
                 return self._file(os.path.join(web_dir(), "index.html"))
             if p.startswith("/static/"):
@@ -174,10 +222,14 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
     def do_POST(self):
+        global LAST_HIT
+        LAST_HIT = time.time()
         p = urlparse(self.path).path
         body = self._read_json()
         e = APP.engine
         try:
+            if p == "/api/ping":
+                return self._json({"ok": True})
             if p == "/api/start":
                 ok, msg = e.start()
                 return self._json({"ok": ok, "message": msg})
@@ -198,10 +250,35 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True, "path": path})
             if p == "/api/win":
                 act = body.get("action") or ""
-                fn = WIN_CTL.get(act)
-                if not fn:
-                    return self._json({"ok": False, "message": "不支持的操作"}, 400)
-                return self._json(fn() or {"ok": True})
+                if act == "browse":
+                    folder = pick_folder()
+                    if not folder:
+                        return self._json({"ok": False, "message": "已取消"})
+                    cand = os.path.join(folder, "resources", "app", "index.js")
+                    if not os.path.isfile(cand):
+                        found = None
+                        try:
+                            for name in os.listdir(folder):
+                                q = os.path.join(folder, name, "resources",
+                                                 "app", "index.js")
+                                if os.path.isfile(q):
+                                    found = q
+                                    break
+                        except OSError:
+                            pass
+                        cand = found
+                    if not cand or not os.path.isfile(cand):
+                        return self._json(
+                            {"ok": False,
+                             "message": "该目录下没有 resources\\app\\index.js"})
+                    save_settings({"index_js": cand})
+                    e.index_js = cand
+                    return self._json({"ok": True, "index_js": cand})
+                if act in ("close", "quit"):
+                    self._json({"ok": True})
+                    APP.quit_evt.set()
+                    return
+                return self._json({"ok": False, "message": "不支持的操作"}, 400)
             if p == "/api/locate":
                 idx, src = find_install(deep=bool(body.get("deep", True)))
                 if not idx:
